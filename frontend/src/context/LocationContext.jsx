@@ -38,63 +38,91 @@ export function LocationProvider({ children }) {
 
   /**
    * Auto-detect location via browser HTML5 Geolocation API and reverse geocoding
+   * Returns Promise resolving with the detected location object { street, city, state, postalCode, pincode, country, latitude, longitude }
    */
-  async function detectCurrentLocation() {
-    if (!navigator.geolocation) {
-      setDetectionError('Geolocation is not supported by your browser.')
-      return
-    }
+  function detectCurrentLocation() {
+    return new Promise((resolve, reject) => {
+      if (typeof window === 'undefined' || !navigator.geolocation) {
+        const err = new Error('Geolocation is not supported by your browser.')
+        setDetectionError(err.message)
+        reject(err)
+        return
+      }
 
-    setIsDetecting(true)
-    setDetectionError('')
+      setIsDetecting(true)
+      setDetectionError('')
 
-    navigator.geolocation.getCurrentPosition(
-      async (pos) => {
-        try {
-          const lat = pos.coords.latitude
-          const lon = pos.coords.longitude
+      navigator.geolocation.getCurrentPosition(
+        async (pos) => {
+          try {
+            const lat = pos.coords.latitude
+            const lon = pos.coords.longitude
 
-          // Free client reverse geocoding endpoint
-          const res = await fetch(
-            `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=en`
-          )
+            let detectedStreet = ''
+            let detectedCity = 'Detected City'
+            let detectedState = ''
+            let detectedPincode = ''
+            let detectedCountry = 'India'
 
-          if (!res.ok) throw new Error('Failed to resolve coordinates.')
-          const data = await res.json()
+            try {
+              const res = await fetch(
+                `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json`,
+                {
+                  headers: { 'User-Agent': 'ShopVerseMarketplace/1.0 (contact@shopverse.market)' },
+                }
+              )
+              if (res.ok) {
+                const data = await res.json()
+                const a = data.address || {}
+                const streetParts = [a.house_number, a.road || a.street, a.suburb || a.neighbourhood || a.quarter].filter(Boolean)
+                detectedStreet = streetParts.join(', ') || a.amenity || data.name || ''
+                detectedCity = a.city || a.town || a.village || a.suburb || a.city_district || 'Detected City'
+                detectedState = a.state || a.region || ''
+                detectedPincode = a.postcode || ''
+                detectedCountry = a.country || 'India'
+              }
+            } catch (fetchErr) {
+              console.warn('[LocationContext] Reverse geocoding fallback:', fetchErr.message)
+            }
 
-          const detectedCity = data.city || data.locality || data.principalSubdivision || 'Detected City'
-          const detectedPincode = data.postcode || ''
-          const detectedState = data.principalSubdivision || ''
-          const detectedCountry = data.countryName || 'Global'
+            const nextLoc = {
+              street: detectedStreet,
+              city: detectedCity,
+              pincode: detectedPincode,
+              postalCode: detectedPincode,
+              state: detectedState,
+              country: detectedCountry,
+              latitude: lat,
+              longitude: lon,
+              isAutoDetected: true,
+            }
 
-          const nextLoc = {
-            city: detectedCity,
-            pincode: detectedPincode,
-            state: detectedState,
-            country: detectedCountry,
-            latitude: lat,
-            longitude: lon,
-            isAutoDetected: true,
+            setLocation(nextLoc)
+            setIsLocationModalOpen(false)
+            resolve(nextLoc)
+          } catch (err) {
+            setDetectionError('Unable to identify location from GPS. You can enter your address manually.')
+            reject(err)
+          } finally {
+            setIsDetecting(false)
           }
-
-          setLocation(nextLoc)
-          setIsLocationModalOpen(false)
-        } catch (err) {
-          setDetectionError('Unable to identify location from GPS. You can enter your pincode manually.')
-        } finally {
+        },
+        (err) => {
           setIsDetecting(false)
-        }
-      },
-      (err) => {
-        setIsDetecting(false)
-        if (err.code === 1) {
-          setDetectionError('Location access was denied. Please allow location permissions in your browser or enter your pincode below.')
-        } else {
-          setDetectionError('Unable to retrieve location coordinates.')
-        }
-      },
-      { timeout: 10000, enableHighAccuracy: true }
-    )
+          let msg = 'Unable to retrieve location coordinates.'
+          if (err.code === 1) {
+            msg = 'Location permission was denied. Please allow location access in your browser or enter your address manually.'
+          } else if (err.code === 2) {
+            msg = 'Location position unavailable. Please enter your address manually.'
+          } else if (err.code === 3) {
+            msg = 'Location request timed out. Please try again or enter your address manually.'
+          }
+          setDetectionError(msg)
+          reject(new Error(msg))
+        },
+        { timeout: 10000, enableHighAccuracy: true }
+      )
+    })
   }
 
   function setManualLocation(newLoc) {

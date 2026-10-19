@@ -12,7 +12,10 @@ import {
   DollarSign,
   ExternalLink,
   Lock,
+  Loader2,
+  MapPin,
   Minus,
+  Navigation,
   Package,
   Plus,
   QrCode,
@@ -64,7 +67,7 @@ function loadRazorpaySdk() {
 export default function CheckoutPage() {
   const { cart, cartSubtotal, updateQuantity, removeFromCart, clearCart } = useCart()
   const { user } = useAuth()
-  const { location: deliveryLoc } = useDeliveryLocation()
+  const { location: deliveryLoc, detectCurrentLocation } = useDeliveryLocation()
   const navigate = useNavigate()
 
   const [address, setAddress] = useState(() => {
@@ -124,7 +127,53 @@ export default function CheckoutPage() {
   const [error, setError] = useState('')
   const [processingStep, setProcessingStep] = useState('')
   const [fieldErrors, setFieldErrors] = useState({})
+  const [locatingGps, setLocatingGps] = useState(false)
+  const [gpsNotice, setGpsNotice] = useState('')
   const shippingRef = useRef(null)
+
+  // Auto-fill address via browser GPS & reverse geocoding
+  async function handleUseCurrentLocation() {
+    setLocatingGps(true)
+    setGpsNotice('')
+    setError('')
+    try {
+      const loc = await detectCurrentLocation()
+      setAddress((prev) => ({
+        ...prev,
+        fullName: prev.fullName || user?.name || '',
+        phone: prev.phone || (user?.phone ? user.phone.replace(/\D/g, '').slice(-10) : ''),
+        street: loc.street || prev.street || 'Current GPS Location',
+        city: loc.city || prev.city || '',
+        state: loc.state || prev.state || '',
+        postalCode: loc.postalCode || loc.pincode || prev.postalCode || '',
+        country: loc.country || prev.country || 'India',
+      }))
+
+      // Clear field-level errors for populated fields
+      setFieldErrors((prev) => {
+        const next = { ...prev }
+        if (loc.street) delete next.street
+        if (loc.city) delete next.city
+        if (loc.state) delete next.state
+        if (loc.postalCode || loc.pincode) delete next.postalCode
+        return next
+      })
+
+      const displayAddress = [loc.street, loc.city, loc.state].filter(Boolean).join(', ')
+      setGpsNotice(
+        `📍 Live coordinates detected! Applied: ${displayAddress} ${loc.postalCode || loc.pincode ? `(${loc.postalCode || loc.pincode})` : ''}`
+      )
+      setTimeout(() => setGpsNotice(''), 7000)
+    } catch (gpsErr) {
+      setGpsNotice('')
+      setError(
+        gpsErr.message ||
+          'Could not retrieve live GPS coordinates. Please allow location permissions in your browser or type your address manually.'
+      )
+    } finally {
+      setLocatingGps(false)
+    }
+  }
 
   // Card details state for direct card entry
   const [cardDetails, setCardDetails] = useState({
@@ -646,28 +695,60 @@ export default function CheckoutPage() {
                   </div>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAddress({
-                      fullName: address.fullName || user?.name || 'Alex Shopper',
-                      phone: (address.phone || user?.phone || '9876543210').replace(/\D/g, '').slice(-10) || '9876543210',
-                      street: '42 Silicon Avenue, 4th Floor',
-                      city: address.city || 'Bengaluru',
-                      state: address.state || 'Karnataka',
-                      postalCode: address.postalCode || '560001',
-                      country: address.country || 'India',
-                    })
-                    setFieldErrors({})
-                    setError('')
-                  }}
-                  className="px-3.5 py-1.5 rounded-xl bg-blue-50 hover:bg-blue-100/80 border border-blue-200 text-[#0a2e8c] font-bold text-xs transition cursor-pointer flex items-center gap-1.5 self-start sm:self-center"
-                  title="Auto-fill sample test address"
-                >
-                  <Sparkles size={13} />
-                  <span>Use Sample Address</span>
-                </button>
+                <div className="flex items-center gap-2 flex-wrap">
+                  {/* Current Location GPS Button */}
+                  <button
+                    type="button"
+                    onClick={handleUseCurrentLocation}
+                    disabled={locatingGps}
+                    className="px-3.5 py-1.5 rounded-xl bg-[#0a2e8c] hover:bg-[#07226b] text-white font-bold text-xs transition cursor-pointer flex items-center gap-1.5 shadow-xs disabled:opacity-60 active:scale-[0.98]"
+                    title="Auto-detect current GPS location and fill address"
+                  >
+                    {locatingGps ? (
+                      <>
+                        <Loader2 size={13} className="animate-spin" />
+                        <span>Detecting Location…</span>
+                      </>
+                    ) : (
+                      <>
+                        <Navigation size={13} className="fill-white" />
+                        <span>Use Current Location</span>
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAddress({
+                        fullName: address.fullName || user?.name || 'Alex Shopper',
+                        phone: (address.phone || user?.phone || '9876543210').replace(/\D/g, '').slice(-10) || '9876543210',
+                        street: '42 Silicon Avenue, 4th Floor',
+                        city: address.city || 'Bengaluru',
+                        state: address.state || 'Karnataka',
+                        postalCode: address.postalCode || '560001',
+                        country: address.country || 'India',
+                      })
+                      setFieldErrors({})
+                      setError('')
+                      setGpsNotice('')
+                    }}
+                    className="px-3.5 py-1.5 rounded-xl bg-blue-50 hover:bg-blue-100/80 border border-blue-200 text-[#0a2e8c] font-bold text-xs transition cursor-pointer flex items-center gap-1.5 self-start sm:self-center"
+                    title="Auto-fill sample test address"
+                  >
+                    <Sparkles size={13} />
+                    <span>Sample Address</span>
+                  </button>
+                </div>
               </div>
+
+              {/* GPS Live Feedback Banner */}
+              {gpsNotice && (
+                <div className="p-3.5 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs font-semibold flex items-center gap-2.5 shadow-2xs">
+                  <CheckCircle2 size={16} className="text-emerald-600 shrink-0" />
+                  <span className="flex-1 leading-snug">{gpsNotice}</span>
+                </div>
+              )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {/* Active Address Card */}
@@ -692,7 +773,7 @@ export default function CheckoutPage() {
                         {[address.city, address.state, address.postalCode].filter(Boolean).join(', ')}{address.country ? `, ${address.country}` : ''}
                       </>
                     ) : (
-                      <span className="text-rose-500 font-medium">Please enter your shipping street address below</span>
+                      <span className="text-rose-500 font-medium">Please enter your shipping street address below or click Use Current Location</span>
                     )}
                   </p>
                   <span className="text-[11px] text-slate-400 font-semibold mt-2 block">
@@ -700,11 +781,34 @@ export default function CheckoutPage() {
                   </span>
                 </div>
 
-                {/* Custom Workplace Card */}
-                <div className="p-5 rounded-2xl border border-dashed border-slate-300 bg-slate-50/50 flex flex-col justify-center items-center text-center">
-                  <Truck size={20} className="text-[#0a2e8c] mb-1" />
-                  <span className="text-xs font-extrabold text-slate-900">Multi-Vendor Express Route</span>
-                  <span className="text-[10px] text-slate-400 mt-0.5">Automated geolocation delivery dispatch</span>
+                {/* Auto-detect GPS Current Location Card */}
+                <div
+                  onClick={handleUseCurrentLocation}
+                  className="p-5 rounded-2xl border-2 border-dashed border-[#0a2e8c]/40 hover:border-[#0a2e8c] bg-blue-50/20 hover:bg-blue-50/60 flex flex-col justify-between transition cursor-pointer group relative active:scale-[0.99]"
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <div className="size-8 rounded-xl bg-[#0a2e8c]/10 text-[#0a2e8c] grid place-items-center group-hover:scale-105 transition">
+                        {locatingGps ? (
+                          <Loader2 size={16} className="animate-spin text-[#0a2e8c]" />
+                        ) : (
+                          <Navigation size={16} className="text-[#0a2e8c] fill-[#0a2e8c]" />
+                        )}
+                      </div>
+                      <span className="text-xs font-black text-slate-900 group-hover:text-[#0a2e8c] transition">
+                        {locatingGps ? 'Detecting coordinates…' : 'Add Current Location'}
+                      </span>
+                    </div>
+                    <span className="text-[10px] font-bold text-[#0a2e8c] bg-white px-2 py-0.5 rounded-full border border-blue-200 shadow-2xs">
+                      Live GPS
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 leading-relaxed min-h-10">
+                    Click to fetch your real-time coordinates and automatically populate your street, city, state, and postal code.
+                  </p>
+                  <span className="text-[11px] font-bold text-[#0a2e8c] flex items-center gap-1 mt-2">
+                    <span>{locatingGps ? 'Connecting to GPS…' : 'Tap to fetch live address →'}</span>
+                  </span>
                 </div>
               </div>
 
@@ -749,7 +853,16 @@ export default function CheckoutPage() {
                 <div className="sm:col-span-2">
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[11px] font-bold text-slate-600 block">Street Address *</label>
-                    {fieldErrors.street && <span className="text-[10px] text-rose-600 font-bold">{fieldErrors.street}</span>}
+                    <button
+                      type="button"
+                      onClick={handleUseCurrentLocation}
+                      disabled={locatingGps}
+                      className="text-[11px] font-bold text-[#0a2e8c] hover:underline flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                      title="Auto-detect current GPS location"
+                    >
+                      <Navigation size={11} className="fill-[#0a2e8c]" />
+                      <span>{locatingGps ? 'Detecting GPS…' : 'Use Current Location'}</span>
+                    </button>
                   </div>
                   <input
                     type="text"
@@ -763,6 +876,7 @@ export default function CheckoutPage() {
                       fieldErrors.street ? 'bg-rose-50 border-2 border-rose-500 focus:border-rose-600' : 'bg-slate-50 border border-slate-200 focus:border-[#0a2e8c]'
                     }`}
                   />
+                  {fieldErrors.street && <span className="text-[10px] text-rose-600 font-bold mt-1 block">{fieldErrors.street}</span>}
                 </div>
                 <div>
                   <div className="flex items-center justify-between mb-1">
