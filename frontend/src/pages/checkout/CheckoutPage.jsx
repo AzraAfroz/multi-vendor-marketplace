@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
   AlertCircle,
@@ -42,11 +42,22 @@ function loadRazorpaySdk() {
       resolve(true)
       return
     }
-    const script = document.createElement('script')
+    const existingScript = typeof document !== 'undefined' ? document.querySelector('script[src*="checkout.razorpay.com"]') : null
+    if (existingScript && window.Razorpay) {
+      resolve(true)
+      return
+    }
+    const script = existingScript || document.createElement('script')
     script.src = 'https://checkout.razorpay.com/v1/checkout.js'
-    script.onload = () => resolve(true)
+    script.async = true
+    script.onload = () => resolve(Boolean(window.Razorpay))
     script.onerror = () => resolve(false)
-    document.body.appendChild(script)
+    if (!existingScript && typeof document !== 'undefined') {
+      document.body.appendChild(script)
+    }
+    setTimeout(() => {
+      resolve(Boolean(typeof window !== 'undefined' && window.Razorpay))
+    }, 5000)
   })
 }
 
@@ -112,6 +123,8 @@ export default function CheckoutPage() {
   const [validating, setValidating] = useState(false)
   const [error, setError] = useState('')
   const [processingStep, setProcessingStep] = useState('')
+  const [fieldErrors, setFieldErrors] = useState({})
+  const shippingRef = useRef(null)
 
   // Card details state for direct card entry
   const [cardDetails, setCardDetails] = useState({
@@ -221,20 +234,45 @@ export default function CheckoutPage() {
     if (e?.preventDefault) e.preventDefault()
     if (cart.length === 0) return
 
-    // Verify required shipping address fields
-    if (
-      !address.fullName?.trim() ||
-      !address.phone?.trim() ||
-      !address.street?.trim() ||
-      !address.city?.trim() ||
-      !address.state?.trim() ||
-      !address.postalCode?.trim()
-    ) {
-      setError('Please provide your complete shipping address (Full Name, Phone, Street, City, State, and PIN Code) before placing your order.')
+    setError('')
+
+    // Validate each required shipping address field
+    const errors = {}
+    if (!address.fullName?.trim()) {
+      errors.fullName = 'Full Name is required'
+    }
+    const cleanPhone = (address.phone || '').replace(/\D/g, '')
+    if (!address.phone?.trim()) {
+      errors.phone = 'Phone number is required'
+    } else if (cleanPhone.length < 7) {
+      errors.phone = 'Enter a valid phone number (at least 7 digits)'
+    }
+    if (!address.street?.trim()) {
+      errors.street = 'Street address is required'
+    }
+    if (!address.city?.trim()) {
+      errors.city = 'City is required'
+    }
+    if (!address.state?.trim()) {
+      errors.state = 'State / Region is required'
+    }
+    if (!address.postalCode?.trim()) {
+      errors.postalCode = 'Postal / PIN code is required'
+    }
+
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors)
+      setError('Please provide all required shipping address fields before placing your order.')
+      if (shippingRef.current) {
+        shippingRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }
       setLoading(false)
       setProcessingStep('')
       return
     }
+
+    setFieldErrors({})
+    setLoading(true)
 
     try {
       // 1. CASH ON DELIVERY
@@ -272,13 +310,19 @@ export default function CheckoutPage() {
 
         const sdkLoaded = await loadRazorpaySdk()
         if (!sdkLoaded || !window.Razorpay) {
-          setError('Failed to load Razorpay Checkout SDK. Please check your network connection and try again.')
+          setError(
+            'The Razorpay checkout script could not be loaded. This is commonly blocked by browser ad-blockers (such as uBlock Origin or Brave Shields). Please disable ad-blockers for this tab, or select Cash on Delivery / Card to complete your purchase.'
+          )
           setLoading(false)
           setProcessingStep('')
           return
         }
 
         try {
+          const formattedContact = cleanPhone.slice(-10) || '9876543210'
+          const formattedEmail = (user?.email || '').trim() || 'customer@marketplace.com'
+          const formattedName = (address.fullName || user?.name || 'Customer').trim()
+
           const options = {
             key: rzpOrder.keyId,
             amount: rzpOrder.amount,
@@ -287,9 +331,13 @@ export default function CheckoutPage() {
             description: `Checkout for ${cart.length} item(s)`,
             order_id: rzpOrder.orderId,
             prefill: {
-              name: address.fullName,
-              email: user?.email || 'shopper@shopverse.market',
-              contact: address.phone,
+              name: formattedName,
+              email: formattedEmail,
+              contact: formattedContact,
+            },
+            notes: {
+              shippingStreet: address.street,
+              shippingCity: address.city,
             },
             theme: {
               color: '#0a2e8c',
@@ -330,6 +378,7 @@ export default function CheckoutPage() {
             setLoading(false)
             setProcessingStep('')
           })
+          setProcessingStep('Waiting for payment confirmation from Razorpay…')
           rzp.open()
           return
         } catch (sdkError) {
@@ -585,12 +634,39 @@ export default function CheckoutPage() {
             </div>
 
             {/* Step 1: Shipping & Delivery Address */}
-            <div className="bg-white rounded-3xl p-6 sm:p-8 border border-slate-200/90 shadow-sm space-y-6">
-              <div className="flex items-center gap-3">
-                <span className="size-8 rounded-full bg-[#0a2e8c] text-white font-black text-sm grid place-items-center">
-                  1
-                </span>
-                <h2 className="text-lg font-black text-slate-950">Shipping &amp; Delivery Address</h2>
+            <div ref={shippingRef} className="bg-white rounded-3xl p-6 sm:p-8 border border-slate-200/90 shadow-sm space-y-6">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
+                <div className="flex items-center gap-3">
+                  <span className="size-8 rounded-full bg-[#0a2e8c] text-white font-black text-sm grid place-items-center">
+                    1
+                  </span>
+                  <div>
+                    <h2 className="text-lg font-black text-slate-950">Shipping &amp; Delivery Address</h2>
+                    <p className="text-xs text-slate-500">Provide complete address for door delivery dispatch</p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAddress({
+                      fullName: address.fullName || user?.name || 'Alex Shopper',
+                      phone: (address.phone || user?.phone || '9876543210').replace(/\D/g, '').slice(-10) || '9876543210',
+                      street: '42 Silicon Avenue, 4th Floor',
+                      city: address.city || 'Bengaluru',
+                      state: address.state || 'Karnataka',
+                      postalCode: address.postalCode || '560001',
+                      country: address.country || 'India',
+                    })
+                    setFieldErrors({})
+                    setError('')
+                  }}
+                  className="px-3.5 py-1.5 rounded-xl bg-blue-50 hover:bg-blue-100/80 border border-blue-200 text-[#0a2e8c] font-bold text-xs transition cursor-pointer flex items-center gap-1.5 self-start sm:self-center"
+                  title="Auto-fill sample test address"
+                >
+                  <Sparkles size={13} />
+                  <span>Use Sample Address</span>
+                </button>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -616,7 +692,7 @@ export default function CheckoutPage() {
                         {[address.city, address.state, address.postalCode].filter(Boolean).join(', ')}{address.country ? `, ${address.country}` : ''}
                       </>
                     ) : (
-                      <span className="text-slate-400 italic">Please enter your shipping street address below</span>
+                      <span className="text-rose-500 font-medium">Please enter your shipping street address below</span>
                     )}
                   </p>
                   <span className="text-[11px] text-slate-400 font-semibold mt-2 block">
@@ -635,63 +711,111 @@ export default function CheckoutPage() {
               {/* Address Quick Edit Inputs */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
                 <div>
-                  <label className="text-[11px] font-bold text-slate-600 block mb-1">Full Name *</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[11px] font-bold text-slate-600 block">Full Name *</label>
+                    {fieldErrors.fullName && <span className="text-[10px] text-rose-600 font-bold">{fieldErrors.fullName}</span>}
+                  </div>
                   <input
                     type="text"
                     placeholder="Receiver's Full Name"
                     value={address.fullName}
-                    onChange={(e) => setAddress({ ...address, fullName: e.target.value })}
-                    className="w-full h-10 px-3 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-[#0a2e8c]"
+                    onChange={(e) => {
+                      setAddress({ ...address, fullName: e.target.value })
+                      if (fieldErrors.fullName) setFieldErrors((prev) => ({ ...prev, fullName: '' }))
+                    }}
+                    className={`w-full h-10 px-3 text-xs rounded-xl outline-none transition ${
+                      fieldErrors.fullName ? 'bg-rose-50 border-2 border-rose-500 focus:border-rose-600' : 'bg-slate-50 border border-slate-200 focus:border-[#0a2e8c]'
+                    }`}
                   />
                 </div>
                 <div>
-                  <label className="text-[11px] font-bold text-slate-600 block mb-1">Phone Number *</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[11px] font-bold text-slate-600 block">Phone Number *</label>
+                    {fieldErrors.phone && <span className="text-[10px] text-rose-600 font-bold">{fieldErrors.phone}</span>}
+                  </div>
                   <input
                     type="text"
                     placeholder="10-digit mobile number"
                     value={address.phone}
-                    onChange={(e) => setAddress({ ...address, phone: e.target.value })}
-                    className="w-full h-10 px-3 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-[#0a2e8c]"
+                    onChange={(e) => {
+                      setAddress({ ...address, phone: e.target.value })
+                      if (fieldErrors.phone) setFieldErrors((prev) => ({ ...prev, phone: '' }))
+                    }}
+                    className={`w-full h-10 px-3 text-xs rounded-xl outline-none transition ${
+                      fieldErrors.phone ? 'bg-rose-50 border-2 border-rose-500 focus:border-rose-600' : 'bg-slate-50 border border-slate-200 focus:border-[#0a2e8c]'
+                    }`}
                   />
                 </div>
                 <div className="sm:col-span-2">
-                  <label className="text-[11px] font-bold text-slate-600 block mb-1">Street Address *</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[11px] font-bold text-slate-600 block">Street Address *</label>
+                    {fieldErrors.street && <span className="text-[10px] text-rose-600 font-bold">{fieldErrors.street}</span>}
+                  </div>
                   <input
                     type="text"
                     placeholder="House / Flat / Street / Area"
                     value={address.street}
-                    onChange={(e) => setAddress({ ...address, street: e.target.value })}
-                    className="w-full h-10 px-3 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-[#0a2e8c]"
+                    onChange={(e) => {
+                      setAddress({ ...address, street: e.target.value })
+                      if (fieldErrors.street) setFieldErrors((prev) => ({ ...prev, street: '' }))
+                    }}
+                    className={`w-full h-10 px-3 text-xs rounded-xl outline-none transition ${
+                      fieldErrors.street ? 'bg-rose-50 border-2 border-rose-500 focus:border-rose-600' : 'bg-slate-50 border border-slate-200 focus:border-[#0a2e8c]'
+                    }`}
                   />
                 </div>
                 <div>
-                  <label className="text-[11px] font-bold text-slate-600 block mb-1">City *</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[11px] font-bold text-slate-600 block">City *</label>
+                    {fieldErrors.city && <span className="text-[10px] text-rose-600 font-bold">{fieldErrors.city}</span>}
+                  </div>
                   <input
                     type="text"
                     placeholder="City"
                     value={address.city}
-                    onChange={(e) => setAddress({ ...address, city: e.target.value })}
-                    className="w-full h-10 px-3 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-[#0a2e8c]"
+                    onChange={(e) => {
+                      setAddress({ ...address, city: e.target.value })
+                      if (fieldErrors.city) setFieldErrors((prev) => ({ ...prev, city: '' }))
+                    }}
+                    className={`w-full h-10 px-3 text-xs rounded-xl outline-none transition ${
+                      fieldErrors.city ? 'bg-rose-50 border-2 border-rose-500 focus:border-rose-600' : 'bg-slate-50 border border-slate-200 focus:border-[#0a2e8c]'
+                    }`}
                   />
                 </div>
                 <div>
-                  <label className="text-[11px] font-bold text-slate-600 block mb-1">State / Region *</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[11px] font-bold text-slate-600 block">State / Region *</label>
+                    {fieldErrors.state && <span className="text-[10px] text-rose-600 font-bold">{fieldErrors.state}</span>}
+                  </div>
                   <input
                     type="text"
                     placeholder="State"
                     value={address.state}
-                    onChange={(e) => setAddress({ ...address, state: e.target.value })}
-                    className="w-full h-10 px-3 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-[#0a2e8c]"
+                    onChange={(e) => {
+                      setAddress({ ...address, state: e.target.value })
+                      if (fieldErrors.state) setFieldErrors((prev) => ({ ...prev, state: '' }))
+                    }}
+                    className={`w-full h-10 px-3 text-xs rounded-xl outline-none transition ${
+                      fieldErrors.state ? 'bg-rose-50 border-2 border-rose-500 focus:border-rose-600' : 'bg-slate-50 border border-slate-200 focus:border-[#0a2e8c]'
+                    }`}
                   />
                 </div>
                 <div>
-                  <label className="text-[11px] font-bold text-slate-600 block mb-1">PIN / Postal Code *</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[11px] font-bold text-slate-600 block">PIN / Postal Code *</label>
+                    {fieldErrors.postalCode && <span className="text-[10px] text-rose-600 font-bold">{fieldErrors.postalCode}</span>}
+                  </div>
                   <input
                     type="text"
-                    placeholder="e.g. 110001"
+                    placeholder="e.g. 560001"
                     value={address.postalCode}
-                    onChange={(e) => setAddress({ ...address, postalCode: e.target.value })}
-                    className="w-full h-10 px-3 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-[#0a2e8c]"
+                    onChange={(e) => {
+                      setAddress({ ...address, postalCode: e.target.value })
+                      if (fieldErrors.postalCode) setFieldErrors((prev) => ({ ...prev, postalCode: '' }))
+                    }}
+                    className={`w-full h-10 px-3 text-xs rounded-xl outline-none transition ${
+                      fieldErrors.postalCode ? 'bg-rose-50 border-2 border-rose-500 focus:border-rose-600' : 'bg-slate-50 border border-slate-200 focus:border-[#0a2e8c]'
+                    }`}
                   />
                 </div>
                 <div>
@@ -942,23 +1066,69 @@ export default function CheckoutPage() {
                 </div>
               </div>
 
+              {/* Live Error notice directly above CTA */}
+              {error && (
+                <div className="p-3.5 rounded-2xl bg-rose-50 border border-rose-200 text-rose-900 text-xs font-semibold flex items-start gap-2.5 shadow-xs">
+                  <AlertCircle size={16} className="text-rose-600 shrink-0 mt-0.5" />
+                  <div className="flex-1 space-y-1">
+                    <p className="leading-snug">{error}</p>
+                    {Object.keys(fieldErrors).length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => shippingRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
+                        className="text-[11px] text-[#0a2e8c] font-bold underline cursor-pointer block hover:text-[#07226b]"
+                      >
+                        Complete missing address fields ↑
+                      </button>
+                    )}
+                    {paymentMethod === 'razorpay' && error.toLowerCase().includes('ad-blocker') && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPaymentMethod('cod')
+                          setError('')
+                        }}
+                        className="text-[11px] text-emerald-700 font-bold underline cursor-pointer block hover:text-emerald-800"
+                      >
+                        Switch to Cash on Delivery (Doorstep Payment) →
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Active step progress indicator */}
+              {loading && processingStep && (
+                <div className="p-3 rounded-2xl bg-blue-50 border border-blue-200 text-[#0a2e8c] text-xs font-bold flex items-center gap-2.5 shadow-xs">
+                  <div className="size-4 border-2 border-[#0a2e8c] border-t-transparent rounded-full animate-spin shrink-0" />
+                  <span className="truncate">{processingStep}</span>
+                </div>
+              )}
+
               {/* Place Secure Order CTA Button */}
               <button
                 type="button"
                 onClick={handlePlaceOrder}
                 disabled={loading}
-                className="w-full py-4 rounded-2xl bg-[#0a2e8c] hover:bg-[#07226b] text-white text-sm font-black transition shadow-lg hover:shadow-xl cursor-pointer flex items-center justify-center gap-2 active:scale-[0.99] disabled:opacity-50"
+                className="w-full py-4 rounded-2xl bg-[#0a2e8c] hover:bg-[#07226b] text-white text-sm font-black transition shadow-lg hover:shadow-xl cursor-pointer flex items-center justify-center gap-2 active:scale-[0.99] disabled:opacity-60 disabled:cursor-not-allowed"
               >
-                <Lock size={16} />
-                <span>
-                  {loading
-                    ? 'Processing…'
-                    : paymentMethod === 'razorpay'
-                    ? `Pay with Razorpay (₹${finalTotal})`
-                    : paymentMethod === 'card'
-                    ? `Pay with Card (₹${finalTotal})`
-                    : `Confirm COD Order (₹${finalTotal})`}
-                </span>
+                {loading ? (
+                  <>
+                    <div className="size-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    <span>Processing Payment…</span>
+                  </>
+                ) : (
+                  <>
+                    <Lock size={16} />
+                    <span>
+                      {paymentMethod === 'razorpay'
+                        ? `Pay with Razorpay (₹${finalTotal})`
+                        : paymentMethod === 'card'
+                        ? `Pay with Card (₹${finalTotal})`
+                        : `Confirm COD Order (₹${finalTotal})`}
+                    </span>
+                  </>
+                )}
               </button>
 
               {/* Guarantees Badge */}
